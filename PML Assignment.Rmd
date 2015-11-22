@@ -1,0 +1,102 @@
+# Constructing a machine learning algorithm to predict activity quality from activity monitors
+
+The goal of this project is to predict the quality of weight lifting from sensor data containing over 150 variables.  The quality is measured by a categorical variable consisting of five possible classes, where Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+More background is available here: http://groupware.les.inf.puc-rio.br/har#ixzz3sAay56j0
+
+
+A CSV file containing the data was downloaded and loaded into a data frame:
+
+```{r}
+options(warn=-1)
+if (!file.exists('pmltraining.csv')){
+    temp = tempfile()
+    download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', temp, method='curl')
+    pmltrain = read.csv(temp)
+    unlink(temp)
+} else {
+  pmltrain = read.csv('pmltraining.csv')
+}
+```
+
+The data set has 19,622 rows and 160 features.  In order to assess the out of sample error the data was split into a training and testing set with 75% of the data in the training set and 25% in the testing set.  The testing set is to be used for estimating the out of sample error.
+
+### I) Partition into training and testing set:
+```{r}
+library(caret)
+inTrain=createDataPartition(y=pmltrain$classe,p=0.75,list=FALSE)
+training=pmltrain[inTrain,]
+testing=pmltrain[-inTrain,]
+```
+
+A series of pre-processing steps were performed to prepare the data for training a machine learning algorithm.
+
+## II) Pre-Process
+### II.1) Remove near zero variance variables
+Some features had little to no variability, making them unlikely to contribute much to explaining the variation in quality of the weight lifting exercise.
+
+These features were removed.  There were 58 features removed.
+```{r}
+nzv=nearZeroVar(training)
+training=training[,-nzv]
+testing=testing[,-nzv]
+```
+
+### II.2) Remove irrelevant variables
+It was assumed that certain features were not relevant to predicting the outcome variable.  These included an index, the user name, and several time stamps.  There were removed.
+
+```{r}
+training=subset(training,select=-c(X,user_name, cvtd_timestamp,raw_timestamp_part_1,raw_timestamp_part_2))
+testing=subset(testing,select=-c(X,user_name, cvtd_timestamp,raw_timestamp_part_1,raw_timestamp_part_2))
+```
+
+### II.3) Convert Factors to Numeric
+Many features were coded as factors, but upon closer inspection they seemed more like numeric variables.  All factor variables were converted to numeric.  This also allowed these features to be centered, scaled, and to have missing values imputed.
+```{r}
+asNumeric <- function(x) as.numeric(as.character(x))
+factorsNumeric <- function(d) modifyList(d, lapply(d[, sapply(d, is.factor)], asNumeric))
+training = factorsNumeric(training)
+testing=factorsNumeric(testing)
+```
+
+### II.4) Center, Scale, Impute Missing Values
+In order to simplify the random forest training process all features were centered, scaled, and missing values were imputed using the default settting for K-nearest-neighbors.
+```{r}
+preProc = preProcess(training[,names(training)!="classe"], method=c("center","scale","knnImpute"))
+trainingT = predict(preProc,training[,names(training)!="classe"])
+trainingT$classe = training$classe
+testingT = predict(preProc,testing[,names(testing)!="classe"])
+testingT$classe = testing$classe
+```
+This was the final step in pre-processing.  The same preprocessing steps were applied to the test set as well.
+
+
+
+### III) Fit model
+The data were used to train a random forest model.  Initially other algorithms were attemped (e.g CART), but the accuracy of these models was subpar.  Random forest was used because it was assumed that the sensor data predicted the quality of exercise via a complex, non-linear relationship.  
+
+In order to increase the speed of the random forest model, mtry was set to 2. 
+
+> *K-fold cross validation was performed to get more accurate estimates of out-of-sample accuracy.  Initially, larger K values were used in the in the cross-validation, but this led to slow model performance.  Eventually, 3-fold cross-validation was found to yield satisfactory results.*
+```{r}
+grid <- expand.grid(mtry=2)
+RFmodelFit=train(classe~.,data=trainingT,method="rf",trControl = trainControl(method = "cv", number = 3),tuneGrid=grid)
+
+RFmodelFit
+```
+
+### IV) Interpretation of Out-of-Sample Error Rate and Cross-validation results.
+
+> *3-fold cross validation yielded an estimate fo accuracy of 0.982 and a Kapp of 0.977.  The out-of-sample error rate should be around 2%.*
+
+### V) Create predictions and confusion matrix
+
+The resulting model was used to predict the outcomes of the test set.  These predictions were used to create a confusion matrix.  The overall statistics showed an accuracy exceeding 98% and a Kapp exceeding 98%.  This was considered sufficiently predictive to accept the results of the random forest model.
+
+```{r}
+RFpredictions=predict(RFmodelFit,testingT)
+
+confusionMatrix(RFpredictions,testingT$classe)
+```
+
+#### Based on the statistics from the confusion matrix, the out-of-sample error should be approximately 2%.
